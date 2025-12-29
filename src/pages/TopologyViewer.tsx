@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -9,20 +9,17 @@ import {
   MarkerType,
   Node,
   Edge,
+  Connection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { RefreshCw, Edit, Plus, Save, X, Code, AlertCircle } from "lucide-react";
+import { RefreshCw, Edit, Plus, Save, X, AlertCircle } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ServiceNode } from "@/components/nodes/ServiceNode";
 import { InfraNode } from "@/components/nodes/InfraNode";
 import { DeployedAsEdge, ObservedByEdge } from "@/components/nodes/CustomEdges";
@@ -30,8 +27,12 @@ import { ServiceDrawer } from "@/components/drawers/ServiceDrawer";
 import { InfraDrawer } from "@/components/drawers/InfraDrawer";
 import { VersionBumpModal } from "@/components/modals/VersionBumpModal";
 import { SyncModal } from "@/components/modals/SyncModal";
-import { PlannerPreviewModal } from "@/components/modals/PlannerPreviewModal";
+import { PreviewAIContextDialog } from "@/components/topology/PreviewAIContextDialog";
 import { AddServiceModal } from "@/components/modals/AddServiceModal";
+import { CreateEdgeModal } from "@/components/modals/CreateEdgeModal";
+import { AdvancedFiltersPopover } from "@/components/topology/AdvancedFiltersPopover";
+import { useTopologyVersion } from "@/contexts/TopologyVersionContext";
+import { useTopologyFilters } from "@/hooks/useTopologyFilters";
 import {
   mockServices,
   mockInfraResources,
@@ -40,6 +41,7 @@ import {
   Service,
   InfraResource,
   TopologyVersion,
+  RelationshipType,
 } from "@/data/mockData";
 
 const nodeTypes = {
@@ -51,6 +53,24 @@ const edgeTypes = {
   deployedAs: DeployedAsEdge,
   observedBy: ObservedByEdge,
 };
+
+function getRelationshipLabel(type: RelationshipType): string {
+  const labelMap: Record<RelationshipType, string> = {
+    DEPLOYED_AS: 'Deployed As',
+    OBSERVED_BY: 'Observed By',
+    DEPENDS_ON: 'Depends On',
+    RUNS_ON: 'Runs On',
+    CONNECTS_TO: 'Connects To',
+    MANAGED_BY: 'Managed By',
+    MONITORED_BY: 'Monitored By',
+  };
+  return labelMap[type] || type;
+}
+
+function getEdgeType(type: RelationshipType): string {
+  if (type === 'OBSERVED_BY') return 'observedBy';
+  return 'deployedAs';
+}
 
 function createNodesAndEdges(
   services: Service[],
@@ -81,80 +101,138 @@ function createNodesAndEdges(
     });
   });
 
-  // Create edges
+  const nodeIds = new Set(nodes.map((n) => n.id));
+
   edges.forEach((edge) => {
-    flowEdges.push({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: edge.type === "DEPLOYED_AS" ? "deployedAs" : "observedBy",
-      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-    });
+    if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+      const relationshipLabel = edge.relationship || getRelationshipLabel(edge.type);
+      flowEdges.push({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: getEdgeType(edge.type),
+        label: relationshipLabel,
+        labelStyle: {
+          fill: 'hsl(var(--muted-foreground))',
+          fontSize: 11,
+          fontWeight: 500,
+        },
+        labelBgStyle: {
+          fill: 'hsl(var(--background))',
+          fillOpacity: 0.9,
+        },
+        labelBgPadding: [4, 6],
+        labelBgBorderRadius: 4,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      });
+    }
   });
 
   return { nodes, edges: flowEdges };
 }
 
 export default function TopologyViewer() {
-  const [selectedVersion, setSelectedVersion] = useState<TopologyVersion>(
-    mockTopologyVersions[0]
-  );
+  const {
+    selectedVersion: contextSelectedVersion,
+    versions: contextVersions,
+    setSelectedVersion: setContextSelectedVersion,
+    setVersions: setContextVersions,
+  } = useTopologyVersion();
+
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeType, setSelectedNodeType] = useState<"service" | "infra" | null>(null);
 
-  // Modal states
   const [showVersionBump, setShowVersionBump] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [showPlannerPreview, setShowPlannerPreview] = useState(false);
   const [showAddService, setShowAddService] = useState(false);
+  const [showCreateEdge, setShowCreateEdge] = useState(false);
+  const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
 
-  // Draft changes
   const [draftChanges, setDraftChanges] = useState<Array<{ type: "added" | "updated" | "linked"; description: string }>>([]);
   const [services, setServices] = useState<Service[]>(mockServices);
-  const [versions, setVersions] = useState<TopologyVersion[]>(mockTopologyVersions);
+
+  const { applyFilters } = useTopologyFilters();
+
+  const prevVersionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (contextVersions.length === 0) {
+      setContextVersions(mockTopologyVersions);
+      setContextSelectedVersion(mockTopologyVersions[0]);
+    }
+  }, [contextVersions.length, setContextVersions, setContextSelectedVersion]);
+
+  useEffect(() => {
+    if (contextSelectedVersion && contextSelectedVersion.id !== prevVersionIdRef.current) {
+      if (prevVersionIdRef.current !== null) {
+        setIsEditMode(false);
+        setDraftChanges([]);
+      }
+      prevVersionIdRef.current = contextSelectedVersion.id;
+    }
+  }, [contextSelectedVersion]);
+
+  const selectedVersion = contextSelectedVersion || mockTopologyVersions[0];
+  const versions = contextVersions.length > 0 ? contextVersions : mockTopologyVersions;
 
   const isCurrentVersion = selectedVersion.isCurrent;
   const canEdit = isCurrentVersion && isEditMode;
 
-  // Create nodes and edges
+  const { filteredServices, filteredInfra } = useMemo(
+    () => applyFilters(services, mockInfraResources),
+    [services, applyFilters]
+  );
+
+  const totalNodeCount = useMemo(
+    () => services.length + mockInfraResources.length,
+    [services]
+  );
+  const filteredNodeCount = useMemo(
+    () => filteredServices.length + filteredInfra.length,
+    [filteredServices, filteredInfra]
+  );
+
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => createNodesAndEdges(services, mockInfraResources, mockTopologyEdges, selectedNodeId),
-    [services, selectedNodeId]
+    () => createNodesAndEdges(filteredServices, filteredInfra, mockTopologyEdges, selectedNodeId),
+    [filteredServices, filteredInfra, selectedNodeId]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  // Update nodes when selection changes
   useEffect(() => {
     const { nodes: newNodes, edges: newEdges } = createNodesAndEdges(
-      services,
-      mockInfraResources,
+      filteredServices,
+      filteredInfra,
       mockTopologyEdges,
       selectedNodeId
     );
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [selectedNodeId, services, setNodes, setEdges]);
+  }, [selectedNodeId, filteredServices, filteredInfra, setNodes, setEdges]);
+
+  // Auto-open dialog when node is selected in preview mode
+  useEffect(() => {
+    if (isPreviewMode && selectedNodeId) {
+      setShowPlannerPreview(true);
+    }
+  }, [isPreviewMode, selectedNodeId]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedNodeId(node.id);
     setSelectedNodeType(node.type as "service" | "infra");
-  }, []);
+    
+    if (isPreviewMode) {
+      setShowPlannerPreview(true);
+    }
+  }, [isPreviewMode]);
 
   const handleCloseDrawer = () => {
     setSelectedNodeId(null);
     setSelectedNodeType(null);
-  };
-
-  const handleVersionChange = (versionId: string) => {
-    const version = versions.find((v) => v.id === versionId);
-    if (version) {
-      setSelectedVersion(version);
-      setIsEditMode(false);
-      setDraftChanges([]);
-    }
   };
 
   const handleEnterEditMode = () => {
@@ -196,8 +274,8 @@ export default function TopologyViewer() {
       isCurrent: false,
     }));
 
-    setVersions([newVersion, ...updatedVersions]);
-    setSelectedVersion(newVersion);
+    setContextVersions([newVersion, ...updatedVersions]);
+    setContextSelectedVersion(newVersion);
     setIsEditMode(false);
     setDraftChanges([]);
     setShowVersionBump(false);
@@ -240,6 +318,75 @@ export default function TopologyViewer() {
     ]);
   };
 
+  const handleConnect = useCallback(
+    (connection: Connection) => {
+      if (!canEdit || !connection.source || !connection.target) return;
+
+      setPendingConnection(connection);
+      setShowCreateEdge(true);
+    },
+    [canEdit]
+  );
+
+  const handleConfirmEdge = useCallback(
+    (relationshipType: RelationshipType, customLabel?: string) => {
+      if (!pendingConnection) return;
+
+      const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+      const targetNode = nodes.find((n) => n.id === pendingConnection.target);
+
+      if (!sourceNode || !targetNode) return;
+
+      const sourceName =
+        (sourceNode.data as { service?: Service; infra?: InfraResource }).service?.name ||
+        (sourceNode.data as { service?: Service; infra?: InfraResource }).infra?.name ||
+        sourceNode.id;
+      const targetName =
+        (targetNode.data as { service?: Service; infra?: InfraResource }).service?.name ||
+        (targetNode.data as { service?: Service; infra?: InfraResource }).infra?.name ||
+        targetNode.id;
+
+      const relationshipLabel = customLabel || getRelationshipLabel(relationshipType);
+      const newEdge: Edge = {
+        id: `edge-${Date.now()}`,
+        source: pendingConnection.source!,
+        target: pendingConnection.target!,
+        type: getEdgeType(relationshipType),
+        label: relationshipLabel,
+        labelStyle: {
+          fill: "hsl(var(--muted-foreground))",
+          fontSize: 11,
+          fontWeight: 500,
+        },
+        labelBgStyle: {
+          fill: "hsl(var(--background))",
+          fillOpacity: 0.9,
+        },
+        labelBgPadding: [4, 6],
+        labelBgBorderRadius: 4,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      };
+
+      setEdges((eds) => [...eds, newEdge]);
+      setDraftChanges((prev) => [
+        ...prev,
+        {
+          type: "linked",
+          description: `Linked ${sourceName} to ${targetName} (${relationshipLabel})`,
+        },
+      ]);
+
+      setPendingConnection(null);
+      setShowCreateEdge(false);
+    },
+    [pendingConnection, nodes, setEdges]
+  );
+
+  const handleCancelEdge = useCallback(() => {
+    setPendingConnection(null);
+    setShowCreateEdge(false);
+  }, []);
+
   const selectedService =
     selectedNodeType === "service"
       ? services.find((s) => s.id === selectedNodeId) || null
@@ -249,48 +396,79 @@ export default function TopologyViewer() {
       ? mockInfraResources.find((i) => i.id === selectedNodeId) || null
       : null;
 
+  const edgeModalNodes = useMemo(() => {
+    if (!pendingConnection) return null;
+
+    const sourceNode = nodes.find((n) => n.id === pendingConnection.source);
+    const targetNode = nodes.find((n) => n.id === pendingConnection.target);
+
+    if (!sourceNode || !targetNode) return null;
+
+    const sourceData = sourceNode.data as { service?: Service; infra?: InfraResource };
+    const targetData = targetNode.data as { service?: Service; infra?: InfraResource };
+
+    const sourceService = sourceData.service;
+    const sourceInfra = sourceData.infra;
+    const targetService = targetData.service;
+    const targetInfra = targetData.infra;
+
+    return {
+      source: {
+        id: pendingConnection.source!,
+        name: sourceService?.name || sourceInfra?.name || pendingConnection.source!,
+        type: (sourceNode.type as "service" | "infra") || "service",
+        nodeData: (sourceService || sourceInfra || {}) as Service | InfraResource,
+      },
+      target: {
+        id: pendingConnection.target!,
+        name: targetService?.name || targetInfra?.name || pendingConnection.target!,
+        type: (targetNode.type as "service" | "infra") || "service",
+        nodeData: (targetService || targetInfra || {}) as Service | InfraResource,
+      },
+    };
+  }, [pendingConnection, nodes]);
+
   return (
     <div className="flex flex-col h-full">
       {/* Header Bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-background">
         <div className="flex items-center gap-3">
-          <Select value={selectedVersion.id} onValueChange={handleVersionChange}>
-            <SelectTrigger className="w-[180px] h-8">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {versions.map((version) => (
-                <SelectItem key={version.id} value={version.id}>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono">{version.version}</span>
-                    {version.isCurrent && (
-                      <Badge variant="secondary" className="text-[10px] h-4">
-                        current
-                      </Badge>
-                    )}
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
           {isEditMode && (
             <Badge variant="outline" className="bg-state-draft-bg text-state-draft border-state-draft/30">
               Draft Mode
             </Badge>
           )}
+          <AdvancedFiltersPopover />
+          {filteredNodeCount !== totalNodeCount && (
+            <span className="text-xs text-muted-foreground">
+              Showing {filteredNodeCount} of {totalNodeCount} nodes
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowPlannerPreview(true)}
-            disabled={!selectedNodeId}
-          >
-            <Code className="h-4 w-4 mr-1" />
-            Preview AI Context
-          </Button>
+          <div className="flex items-center space-x-2">
+            <Switch
+              id="preview-ai-context"
+              checked={isPreviewMode}
+              onCheckedChange={(checked) => {
+                setIsPreviewMode(checked);
+                if (!checked) {
+                  setShowPlannerPreview(false);
+                } else if (selectedNodeId) {
+                  setShowPlannerPreview(true);
+                }
+              }}
+            />
+            <Label htmlFor="preview-ai-context" className="flex items-center gap-1.5 cursor-pointer">
+              Preview AI Context
+            </Label>
+          </div>
+          {isPreviewMode && (
+            <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
+              Preview Mode Active
+            </Badge>
+          )}
 
           <Button
             variant="outline"
@@ -355,6 +533,7 @@ export default function TopologyViewer() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={handleNodeClick}
+          onConnect={handleConnect}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
@@ -405,7 +584,7 @@ export default function TopologyViewer() {
       {/* Drawers */}
       <ServiceDrawer
         service={selectedService}
-        open={!!selectedService}
+        open={!!selectedService && !isPreviewMode}
         onClose={handleCloseDrawer}
         isEditMode={canEdit}
         onSelectInfra={(infraId) => {
@@ -416,7 +595,7 @@ export default function TopologyViewer() {
 
       <InfraDrawer
         infra={selectedInfra}
-        open={!!selectedInfra}
+        open={!!selectedInfra && !isPreviewMode}
         onClose={handleCloseDrawer}
         isEditMode={canEdit}
         onSelectService={(serviceId) => {
@@ -440,12 +619,13 @@ export default function TopologyViewer() {
         onComplete={handleSyncComplete}
       />
 
-      <PlannerPreviewModal
+      <PreviewAIContextDialog
         open={showPlannerPreview}
         onClose={() => setShowPlannerPreview(false)}
         entity={selectedService || selectedInfra}
         entityType={selectedNodeType || "service"}
-        version={selectedVersion.version}
+        topologyVersion={selectedVersion}
+        topologyId="topo_cust_123_prod"
       />
 
       <AddServiceModal
@@ -453,6 +633,16 @@ export default function TopologyViewer() {
         onClose={() => setShowAddService(false)}
         onAdd={handleAddService}
       />
+
+      {edgeModalNodes && (
+        <CreateEdgeModal
+          open={showCreateEdge}
+          onClose={handleCancelEdge}
+          onConfirm={handleConfirmEdge}
+          sourceNode={edgeModalNodes.source}
+          targetNode={edgeModalNodes.target}
+        />
+      )}
     </div>
   );
 }

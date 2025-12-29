@@ -42,11 +42,21 @@ export interface InfraResource {
   }>;
 }
 
+export type RelationshipType = 
+  | 'DEPLOYED_AS' 
+  | 'OBSERVED_BY' 
+  | 'DEPENDS_ON' 
+  | 'RUNS_ON' 
+  | 'CONNECTS_TO' 
+  | 'MANAGED_BY' 
+  | 'MONITORED_BY';
+
 export interface TopologyEdge {
   id: string;
   source: string;
   target: string;
-  type: 'DEPLOYED_AS' | 'OBSERVED_BY';
+  type: RelationshipType;
+  relationship?: string;
 }
 
 export interface TopologyVersion {
@@ -304,11 +314,16 @@ export const mockInfraResources: InfraResource[] = [
 
 export const mockTopologyEdges: TopologyEdge[] = [
   { id: 'edge-1', source: 'svc-payments-api', target: 'k8s-svc-payments', type: 'DEPLOYED_AS' },
-  { id: 'edge-2', source: 'svc-payments-api', target: 'k8s-deploy-payments', type: 'DEPLOYED_AS' },
+  { id: 'edge-2', source: 'svc-payments-api', target: 'k8s-deploy-payments', type: 'RUNS_ON' },
   { id: 'edge-3', source: 'svc-orders-api', target: 'k8s-svc-orders', type: 'DEPLOYED_AS' },
   { id: 'edge-4', source: 'svc-checkout-api', target: 'k8s-svc-checkout', type: 'DEPLOYED_AS' },
-  { id: 'edge-5', source: 'svc-checkout-api', target: 'k8s-deploy-checkout', type: 'DEPLOYED_AS' },
+  { id: 'edge-5', source: 'svc-checkout-api', target: 'k8s-deploy-checkout', type: 'RUNS_ON' },
   { id: 'edge-6', source: 'k8s-svc-payments', target: 'k8s-deploy-payments', type: 'OBSERVED_BY' },
+  { id: 'edge-7', source: 'svc-orders-api', target: 'svc-payments-api', type: 'DEPENDS_ON' },
+  { id: 'edge-8', source: 'svc-checkout-api', target: 'svc-orders-api', type: 'DEPENDS_ON' },
+  { id: 'edge-9', source: 'svc-checkout-api', target: 'svc-payments-api', type: 'CONNECTS_TO' },
+  { id: 'edge-10', source: 'k8s-svc-orders', target: 'k8s-deploy-orders', type: 'MANAGED_BY' },
+  { id: 'edge-11', source: 'k8s-svc-checkout', target: 'k8s-deploy-checkout', type: 'MONITORED_BY' },
 ];
 
 export const mockTopologyVersions: TopologyVersion[] = [
