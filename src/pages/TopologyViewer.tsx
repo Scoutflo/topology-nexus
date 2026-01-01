@@ -13,7 +13,6 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { RefreshCw, Edit, Plus, Save, X, AlertCircle } from "lucide-react";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -31,6 +30,10 @@ import { PreviewAIContextDialog } from "@/components/topology/PreviewAIContextDi
 import { AddServiceModal } from "@/components/modals/AddServiceModal";
 import { CreateEdgeModal } from "@/components/modals/CreateEdgeModal";
 import { AdvancedFiltersPopover } from "@/components/topology/AdvancedFiltersPopover";
+import { EmptyState } from "@/components/topology/EmptyState";
+import { SyncInProgress } from "@/components/topology/SyncInProgress";
+import { FirstSyncBanner } from "@/components/topology/FirstSyncBanner";
+import { SyncErrorBanner } from "@/components/topology/SyncErrorBanner";
 import { useTopologyVersion } from "@/contexts/TopologyVersionContext";
 import { useTopologyFilters } from "@/hooks/useTopologyFilters";
 import {
@@ -144,6 +147,16 @@ export default function TopologyViewer() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeType, setSelectedNodeType] = useState<"service" | "infra" | null>(null);
 
+  // Sync states
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+  const [showFirstSyncBanner, setShowFirstSyncBanner] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [hasEverSynced, setHasEverSynced] = useState(false);
+
+  // Empty state - start with empty topology for demo
+  const [isTopologyEmpty, setIsTopologyEmpty] = useState(true);
+
   const [showVersionBump, setShowVersionBump] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [showPlannerPreview, setShowPlannerPreview] = useState(false);
@@ -152,7 +165,9 @@ export default function TopologyViewer() {
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
 
   const [draftChanges, setDraftChanges] = useState<Array<{ type: "added" | "updated" | "linked"; description: string }>>([]);
-  const [services, setServices] = useState<Service[]>(mockServices);
+  const [services, setServices] = useState<Service[]>([]);
+  const [infraResources, setInfraResources] = useState<InfraResource[]>([]);
+  const [topologyEdges, setTopologyEdges] = useState<typeof mockTopologyEdges>([]);
 
   const { applyFilters } = useTopologyFilters();
 
@@ -182,13 +197,13 @@ export default function TopologyViewer() {
   const canEdit = isCurrentVersion && isEditMode;
 
   const { filteredServices, filteredInfra } = useMemo(
-    () => applyFilters(services, mockInfraResources),
-    [services, applyFilters]
+    () => applyFilters(services, infraResources),
+    [services, infraResources, applyFilters]
   );
 
   const totalNodeCount = useMemo(
-    () => services.length + mockInfraResources.length,
-    [services]
+    () => services.length + infraResources.length,
+    [services, infraResources]
   );
   const filteredNodeCount = useMemo(
     () => filteredServices.length + filteredInfra.length,
@@ -196,8 +211,8 @@ export default function TopologyViewer() {
   );
 
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => createNodesAndEdges(filteredServices, filteredInfra, mockTopologyEdges, selectedNodeId),
-    [filteredServices, filteredInfra, selectedNodeId]
+    () => createNodesAndEdges(filteredServices, filteredInfra, topologyEdges, selectedNodeId),
+    [filteredServices, filteredInfra, topologyEdges, selectedNodeId]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -207,12 +222,12 @@ export default function TopologyViewer() {
     const { nodes: newNodes, edges: newEdges } = createNodesAndEdges(
       filteredServices,
       filteredInfra,
-      mockTopologyEdges,
+      topologyEdges,
       selectedNodeId
     );
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [selectedNodeId, filteredServices, filteredInfra, setNodes, setEdges]);
+  }, [selectedNodeId, filteredServices, filteredInfra, topologyEdges, setNodes, setEdges]);
 
   // Auto-open dialog when node is selected in preview mode
   useEffect(() => {
@@ -244,7 +259,6 @@ export default function TopologyViewer() {
   const handleExitEditMode = () => {
     setIsEditMode(false);
     setDraftChanges([]);
-    setServices(mockServices);
   };
 
   const handleSaveChanges = () => {
@@ -281,17 +295,47 @@ export default function TopologyViewer() {
     setShowVersionBump(false);
   };
 
-  const handleSyncComplete = (acceptedSuggestions: string[]) => {
-    if (acceptedSuggestions.length > 0) {
-      setIsEditMode(true);
-      setDraftChanges((prev) => [
-        ...prev,
-        ...acceptedSuggestions.map(() => ({
-          type: "linked" as const,
-          description: "Accepted sync suggestion",
-        })),
-      ]);
-    }
+  const handleStartSync = (selectedSources: string[]) => {
+    setShowSync(false);
+    setIsSyncing(true);
+    setSyncError(false);
+
+    // Simulate sync process
+    setTimeout(() => {
+      setIsSyncing(false);
+      
+      // Simulate success - populate with mock data
+      setServices(mockServices);
+      setInfraResources(mockInfraResources);
+      setTopologyEdges(mockTopologyEdges);
+      setIsTopologyEmpty(false);
+      setLastSyncedAt(new Date().toISOString());
+
+      // Show first-sync banner only on first sync
+      if (!hasEverSynced) {
+        setShowFirstSyncBanner(true);
+        setHasEverSynced(true);
+        
+        // Update version to show it was auto-synced
+        const autoSyncVersion: TopologyVersion = {
+          id: 'topo-v1',
+          version: 'v1',
+          createdAt: new Date().toISOString(),
+          createdBy: 'Auto Sync',
+          description: 'Initial topology discovery from Kubernetes, AWS, Prometheus, GitHub',
+          isCurrent: true,
+          changes: {
+            servicesAdded: mockServices.length,
+            infraAdded: mockInfraResources.length,
+            linksChanged: mockTopologyEdges.length,
+          },
+        };
+        setContextVersions([autoSyncVersion]);
+        setContextSelectedVersion(autoSyncVersion);
+      } else {
+        setLastSyncedAt(new Date().toISOString());
+      }
+    }, 3000);
   };
 
   const handleAddService = (service: Partial<Service>) => {
@@ -393,7 +437,7 @@ export default function TopologyViewer() {
       : null;
   const selectedInfra =
     selectedNodeType === "infra"
-      ? mockInfraResources.find((i) => i.id === selectedNodeId) || null
+      ? infraResources.find((i) => i.id === selectedNodeId) || null
       : null;
 
   const edgeModalNodes = useMemo(() => {
@@ -430,90 +474,92 @@ export default function TopologyViewer() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header Bar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-background">
-        <div className="flex items-center gap-3">
-          {isEditMode && (
-            <Badge variant="outline" className="bg-state-draft-bg text-state-draft border-state-draft/30">
-              Draft Mode
-            </Badge>
-          )}
-          <AdvancedFiltersPopover />
-          {filteredNodeCount !== totalNodeCount && (
-            <span className="text-xs text-muted-foreground">
-              Showing {filteredNodeCount} of {totalNodeCount} nodes
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="flex items-center space-x-2">
-            <Switch
-              id="preview-ai-context"
-              checked={isPreviewMode}
-              onCheckedChange={(checked) => {
-                setIsPreviewMode(checked);
-                if (!checked) {
-                  setShowPlannerPreview(false);
-                } else if (selectedNodeId) {
-                  setShowPlannerPreview(true);
-                }
-              }}
-            />
-            <Label htmlFor="preview-ai-context" className="flex items-center gap-1.5 cursor-pointer">
-              Preview AI Context
-            </Label>
+      {/* Header Bar - only show when not empty */}
+      {!isTopologyEmpty && (
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-background">
+          <div className="flex items-center gap-3">
+            {isEditMode && (
+              <Badge variant="outline" className="bg-state-draft-bg text-state-draft border-state-draft/30">
+                Draft Mode
+              </Badge>
+            )}
+            <AdvancedFiltersPopover />
+            {filteredNodeCount !== totalNodeCount && (
+              <span className="text-xs text-muted-foreground">
+                Showing {filteredNodeCount} of {totalNodeCount} nodes
+              </span>
+            )}
           </div>
-          {isPreviewMode && (
-            <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
-              Preview Mode Active
-            </Badge>
-          )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowSync(true)}
-            disabled={!isCurrentVersion}
-          >
-            <RefreshCw className="h-4 w-4 mr-1" />
-            Sync Topology
-          </Button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="preview-ai-context"
+                checked={isPreviewMode}
+                onCheckedChange={(checked) => {
+                  setIsPreviewMode(checked);
+                  if (!checked) {
+                    setShowPlannerPreview(false);
+                  } else if (selectedNodeId) {
+                    setShowPlannerPreview(true);
+                  }
+                }}
+              />
+              <Label htmlFor="preview-ai-context" className="flex items-center gap-1.5 cursor-pointer">
+                Preview AI Context
+              </Label>
+            </div>
+            {isPreviewMode && (
+              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
+                Preview Mode Active
+              </Badge>
+            )}
 
-          {!isEditMode ? (
             <Button
+              variant="outline"
               size="sm"
-              onClick={handleEnterEditMode}
+              onClick={() => setShowSync(true)}
               disabled={!isCurrentVersion}
             >
-              <Edit className="h-4 w-4 mr-1" />
-              Edit Topology
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Sync Topology
             </Button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => setShowAddService(true)}>
-                <Plus className="h-4 w-4 mr-1" />
-                Add Service
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleExitEditMode}>
-                <X className="h-4 w-4 mr-1" />
-                Cancel
-              </Button>
+
+            {!isEditMode ? (
               <Button
                 size="sm"
-                onClick={handleSaveChanges}
-                disabled={draftChanges.length === 0}
+                onClick={handleEnterEditMode}
+                disabled={!isCurrentVersion}
               >
-                <Save className="h-4 w-4 mr-1" />
-                Save Changes ({draftChanges.length})
+                <Edit className="h-4 w-4 mr-1" />
+                Edit Topology
               </Button>
-            </div>
-          )}
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setShowAddService(true)}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Service
+                </Button>
+                <Button variant="ghost" size="sm" onClick={handleExitEditMode}>
+                  <X className="h-4 w-4 mr-1" />
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSaveChanges}
+                  disabled={draftChanges.length === 0}
+                >
+                  <Save className="h-4 w-4 mr-1" />
+                  Save Changes ({draftChanges.length})
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Edit Mode Banner */}
-      {isEditMode && (
+      {isEditMode && !isTopologyEmpty && (
         <Alert className="rounded-none border-x-0 border-t-0 bg-state-draft-bg/30 border-state-draft/20">
           <AlertCircle className="h-4 w-4 text-state-draft" />
           <AlertDescription className="text-state-draft text-sm">
@@ -523,6 +569,16 @@ export default function TopologyViewer() {
             </span>
           </AlertDescription>
         </Alert>
+      )}
+
+      {/* First Sync Banner */}
+      {showFirstSyncBanner && !isTopologyEmpty && (
+        <FirstSyncBanner onDismiss={() => setShowFirstSyncBanner(false)} />
+      )}
+
+      {/* Sync Error Banner */}
+      {syncError && (
+        <SyncErrorBanner onDismiss={() => setSyncError(false)} />
       )}
 
       {/* Main Canvas Area */}
@@ -541,45 +597,57 @@ export default function TopologyViewer() {
           className="bg-canvas-bg"
         >
           <Background color="hsl(var(--canvas-dot))" gap={20} size={1} />
-          <Controls className="bg-card border-border" />
-          <MiniMap
-            className="bg-card border-border"
-            nodeColor={(node) => {
-              if (node.type === "service") return "hsl(var(--primary))";
-              return "hsl(var(--muted-foreground))";
-            }}
-          />
+          {!isTopologyEmpty && <Controls className="bg-card border-border" />}
+          {!isTopologyEmpty && (
+            <MiniMap
+              className="bg-card border-border"
+              nodeColor={(node) => {
+                if (node.type === "service") return "hsl(var(--primary))";
+                return "hsl(var(--muted-foreground))";
+              }}
+            />
+          )}
         </ReactFlow>
+
+        {/* Empty State Overlay */}
+        {isTopologyEmpty && !isSyncing && (
+          <EmptyState onSync={() => setShowSync(true)} />
+        )}
+
+        {/* Sync In Progress Overlay */}
+        {isSyncing && <SyncInProgress />}
       </div>
 
-      {/* Version Info Footer */}
-      <Card className="rounded-none border-x-0 border-b-0">
-        <CardContent className="py-2 px-4">
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-4">
-              <span>
-                <span className="text-muted-foreground">Version:</span>{" "}
-                <span className="font-mono font-medium">{selectedVersion.version}</span>
-              </span>
-              <span>
-                <span className="text-muted-foreground">Created:</span>{" "}
-                {new Date(selectedVersion.createdAt).toLocaleString()}
-              </span>
-              <span>
-                <span className="text-muted-foreground">By:</span> {selectedVersion.createdBy}
-              </span>
+      {/* Version Info Footer - only show when not empty */}
+      {!isTopologyEmpty && (
+        <Card className="rounded-none border-x-0 border-b-0">
+          <CardContent className="py-2 px-4">
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-4">
+                <span>
+                  <span className="text-muted-foreground">Version:</span>{" "}
+                  <span className="font-mono font-medium">{selectedVersion.version}</span>
+                </span>
+                <span>
+                  <span className="text-muted-foreground">Created:</span>{" "}
+                  {new Date(selectedVersion.createdAt).toLocaleString()}
+                </span>
+                <span>
+                  <span className="text-muted-foreground">By:</span> {selectedVersion.createdBy}
+                </span>
+              </div>
+              {!isCurrentVersion && (
+                <Badge variant="outline" className="text-[10px]">
+                  Read-only (historical version)
+                </Badge>
+              )}
             </div>
-            {!isCurrentVersion && (
-              <Badge variant="outline" className="text-[10px]">
-                Read-only (historical version)
-              </Badge>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
-            {selectedVersion.description}
-          </p>
-        </CardContent>
-      </Card>
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+              {selectedVersion.description}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Drawers */}
       <ServiceDrawer
@@ -616,7 +684,10 @@ export default function TopologyViewer() {
       <SyncModal
         open={showSync}
         onClose={() => setShowSync(false)}
-        onComplete={handleSyncComplete}
+        onStartSync={handleStartSync}
+        isLoading={isSyncing}
+        lastSyncedAt={lastSyncedAt}
+        currentVersion={hasEverSynced ? selectedVersion.version : undefined}
       />
 
       <PreviewAIContextDialog

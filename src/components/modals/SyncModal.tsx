@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { RefreshCw, Check, X, EyeOff, Loader2, ArrowRight } from "lucide-react";
+import { useState, useMemo } from "react";
+import { RefreshCw, Loader2, Info, Github, Cloud, Database, Activity } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -9,342 +9,299 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { mockSyncSuggestions, mockServices, SyncSuggestion } from "@/data/mockData";
-import { InfraTypeBadge } from "@/components/nodes/InfraTypeBadge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
+interface IntegrationSource {
+  id: string;
+  name: string;
+  type: "kubernetes" | "aws" | "monitoring" | "git";
+  category: "runtime" | "observability" | "code";
+  connected: boolean;
+}
+
+const mockIntegrationSources: IntegrationSource[] = [
+  // Runtime sources
+  { id: "k8s-prod", name: "prod-cluster-1", type: "kubernetes", category: "runtime", connected: true },
+  { id: "k8s-staging", name: "staging-cluster", type: "kubernetes", category: "runtime", connected: true },
+  { id: "aws-prod", name: "scoutflo-prod", type: "aws", category: "runtime", connected: true },
+  { id: "aws-staging", name: "scoutflo-staging", type: "aws", category: "runtime", connected: true },
+  // Observability
+  { id: "prometheus", name: "Prometheus", type: "monitoring", category: "observability", connected: true },
+  { id: "datadog", name: "Datadog", type: "monitoring", category: "observability", connected: true },
+  { id: "sentry", name: "Sentry", type: "monitoring", category: "observability", connected: false },
+  // Code
+  { id: "github", name: "GitHub", type: "git", category: "code", connected: true },
+];
 
 interface SyncModalProps {
   open: boolean;
   onClose: () => void;
-  onComplete: (acceptedSuggestions: string[]) => void;
+  onStartSync: (selectedSources: string[]) => void;
+  isLoading?: boolean;
+  lastSyncedAt?: string | null;
+  currentVersion?: string;
 }
 
-type SyncState = 'initial' | 'syncing' | 'results';
+export function SyncModal({ 
+  open, 
+  onClose, 
+  onStartSync, 
+  isLoading = false,
+  lastSyncedAt,
+  currentVersion 
+}: SyncModalProps) {
+  const [selectedSources, setSelectedSources] = useState<string[]>([
+    "github" // Auto-selected
+  ]);
 
-export function SyncModal({ open, onClose, onComplete }: SyncModalProps) {
-  const [state, setState] = useState<SyncState>('initial');
-  const [acceptedSuggestions, setAcceptedSuggestions] = useState<string[]>([]);
-  const [ignoredSuggestions, setIgnoredSuggestions] = useState<string[]>([]);
+  const runtimeSources = mockIntegrationSources.filter(s => s.category === "runtime" && s.connected);
+  const observabilitySources = mockIntegrationSources.filter(s => s.category === "observability" && s.connected);
+  const codeSources = mockIntegrationSources.filter(s => s.category === "code" && s.connected);
+
+  const kubernetesSources = runtimeSources.filter(s => s.type === "kubernetes");
+  const awsSources = runtimeSources.filter(s => s.type === "aws");
+
+  const selectedRuntimeCount = useMemo(() => {
+    return selectedSources.filter(id => 
+      runtimeSources.some(s => s.id === id)
+    ).length;
+  }, [selectedSources, runtimeSources]);
+
+  const canStartSync = selectedRuntimeCount > 0;
+
+  const toggleSource = (sourceId: string) => {
+    // Don't allow toggling GitHub (auto-selected)
+    if (sourceId === "github") return;
+    
+    setSelectedSources(prev => 
+      prev.includes(sourceId) 
+        ? prev.filter(id => id !== sourceId)
+        : [...prev, sourceId]
+    );
+  };
 
   const handleStartSync = () => {
-    setState('syncing');
-    setTimeout(() => {
-      setState('results');
-    }, 2000);
+    onStartSync(selectedSources);
   };
 
-  const handleAccept = (id: string) => {
-    setAcceptedSuggestions(prev => [...prev, id]);
+  const formatLastSynced = (date: string) => {
+    const d = new Date(date);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) return "today";
+    if (diffDays === 1) return "yesterday";
+    return `${diffDays} days ago`;
   };
-
-  const handleIgnore = (id: string) => {
-    setIgnoredSuggestions(prev => [...prev, id]);
-  };
-
-  const handleComplete = () => {
-    onComplete(acceptedSuggestions);
-    setState('initial');
-    setAcceptedSuggestions([]);
-    setIgnoredSuggestions([]);
-    onClose();
-  };
-
-  const handleClose = () => {
-    setState('initial');
-    setAcceptedSuggestions([]);
-    setIgnoredSuggestions([]);
-    onClose();
-  };
-
-  const newInfra = mockSyncSuggestions.filter(s => s.type === 'new_infra');
-  const unlinkedNodes = mockSyncSuggestions.filter(s => s.type === 'unlinked_node');
-  const suggestedRels = mockSyncSuggestions.filter(s => s.type === 'suggested_relationship');
-
-  const isProcessed = (id: string) => 
-    acceptedSuggestions.includes(id) || ignoredSuggestions.includes(id);
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[600px]">
-        {state === 'initial' && (
-          <>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <RefreshCw className="h-5 w-5" />
-                Sync topology with runtime
-              </DialogTitle>
-              <DialogDescription>
-                Discover changes from your connected clusters
-              </DialogDescription>
-            </DialogHeader>
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[520px] max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RefreshCw className="h-5 w-5" />
+            Sync your topology
+          </DialogTitle>
+          <DialogDescription>
+            Select which integrations Scoutflo should use to discover your system.
+          </DialogDescription>
+        </DialogHeader>
 
-            <div className="space-y-4 py-4">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-state-connected">What sync does</CardTitle>
-                </CardHeader>
-                <CardContent className="text-sm text-muted-foreground">
-                  <ul className="space-y-1">
-                    <li>• Discovers new infrastructure resources from connected clusters</li>
-                    <li>• Identifies unlinked infra nodes and suggests service mappings</li>
-                    <li>• Detects drift between topology and runtime</li>
-                  </ul>
-                </CardContent>
-              </Card>
+        {/* Last synced context for existing topologies */}
+        {lastSyncedAt && currentVersion && (
+          <p className="text-xs text-muted-foreground -mt-2">
+            Last synced {formatLastSynced(lastSyncedAt)} · Version {currentVersion}
+          </p>
+        )}
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-state-partial">What sync does NOT do</CardTitle>
-                </CardHeader>
-                <CardContent className="text-sm text-muted-foreground">
-                  <ul className="space-y-1">
-                    <li>• Does not modify live infrastructure</li>
-                    <li>• Does not auto-apply changes without review</li>
-                    <li>• Does not override manual configurations silently</li>
-                  </ul>
-                </CardContent>
-              </Card>
+        <div className="space-y-6 py-2">
+          {/* Section 1: Runtime Sources */}
+          <div className="space-y-3">
+            <div>
+              <Label className="text-sm font-medium">
+                Runtime sources
+                <span className="text-destructive ml-1">*</span>
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Where your services and infrastructure actually run.
+              </p>
             </div>
 
-            <DialogFooter>
-              <Button variant="outline" onClick={handleClose}>Cancel</Button>
-              <Button onClick={handleStartSync}>
+            {/* Kubernetes clusters */}
+            {kubernetesSources.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Database className="h-3 w-3" />
+                  <span>Kubernetes clusters</span>
+                </div>
+                <div className="space-y-2 pl-5">
+                  {kubernetesSources.map(source => (
+                    <div key={source.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={source.id}
+                        checked={selectedSources.includes(source.id)}
+                        onCheckedChange={() => toggleSource(source.id)}
+                      />
+                      <Label 
+                        htmlFor={source.id} 
+                        className="text-sm font-normal cursor-pointer"
+                      >
+                        {source.name}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* AWS accounts */}
+            {awsSources.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Cloud className="h-3 w-3" />
+                  <span>AWS accounts</span>
+                </div>
+                <div className="space-y-2 pl-5">
+                  {awsSources.map(source => (
+                    <div key={source.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={source.id}
+                        checked={selectedSources.includes(source.id)}
+                        onCheckedChange={() => toggleSource(source.id)}
+                      />
+                      <Label 
+                        htmlFor={source.id} 
+                        className="text-sm font-normal cursor-pointer"
+                      >
+                        {source.name}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Monitoring & Observability */}
+          <div className="space-y-3">
+            <div>
+              <Label className="text-sm font-medium">
+                Monitoring & observability
+                <span className="text-muted-foreground text-xs font-normal ml-2">Recommended</span>
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Helps Scoutflo understand service boundaries and behavior.
+              </p>
+            </div>
+
+            <div className="space-y-2 pl-0">
+              {observabilitySources.map(source => (
+                <div key={source.id} className="flex items-center gap-2">
+                  <Checkbox
+                    id={source.id}
+                    checked={selectedSources.includes(source.id)}
+                    onCheckedChange={() => toggleSource(source.id)}
+                  />
+                  <Activity className="h-3 w-3 text-muted-foreground" />
+                  <Label 
+                    htmlFor={source.id} 
+                    className="text-sm font-normal cursor-pointer"
+                  >
+                    {source.name}
+                  </Label>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              You can sync without observability, but results may be incomplete.
+            </p>
+          </div>
+
+          {/* Section 3: Code Context */}
+          <div className="space-y-3">
+            <div>
+              <Label className="text-sm font-medium">Code & delivery</Label>
+            </div>
+
+            <div className="space-y-2">
+              {codeSources.map(source => (
+                <div key={source.id} className="flex items-center gap-2">
+                  <Checkbox
+                    id={source.id}
+                    checked={selectedSources.includes(source.id)}
+                    disabled
+                  />
+                  <Github className="h-3 w-3 text-muted-foreground" />
+                  <Label 
+                    htmlFor={source.id} 
+                    className="text-sm font-normal text-muted-foreground"
+                  >
+                    {source.name}
+                    <span className="text-xs ml-2">(connected)</span>
+                  </Label>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Scoutflo uses repositories to correlate services and deployments.
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Section 4: Sync Expectations */}
+          <Alert className="bg-muted/50 border-border">
+            <Info className="h-4 w-4" />
+            <AlertDescription>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-1">What this sync will do</p>
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    <li>• Discover services and infrastructure</li>
+                    <li>• Propose relationships between them</li>
+                    <li>• Create an initial topology snapshot</li>
+                  </ul>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-1">What this sync will NOT do</p>
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    <li>• Modify infrastructure</li>
+                    <li>• Deploy anything</li>
+                    <li>• Lock you into decisions</li>
+                  </ul>
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isLoading}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleStartSync} 
+            disabled={!canStartSync || isLoading}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              <>
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Start Sync
-              </Button>
-            </DialogFooter>
-          </>
-        )}
-
-        {state === 'syncing' && (
-          <>
-            <DialogHeader>
-              <DialogTitle>Syncing topology</DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-primary mb-4" />
-              <p className="text-muted-foreground">Sync in progress...</p>
-              <p className="text-xs text-muted-foreground mt-1">Discovering resources from connected clusters</p>
-            </div>
-          </>
-        )}
-
-        {state === 'results' && (
-          <>
-            <DialogHeader>
-              <DialogTitle>Sync results</DialogTitle>
-              <DialogDescription>
-                Review and accept changes to update your topology
-              </DialogDescription>
-            </DialogHeader>
-
-            <ScrollArea className="max-h-[400px] pr-4">
-              <div className="space-y-4 py-2">
-                {/* New Infra */}
-                {newInfra.length > 0 && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">New infra detected</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      {newInfra.map(suggestion => {
-                        const infra = suggestion.infraResource;
-                        if (!infra) return null;
-                        const processed = isProcessed(suggestion.id);
-                        
-                        return (
-                          <div 
-                            key={suggestion.id} 
-                            className={`flex items-center justify-between p-2 rounded-lg border ${
-                              processed ? 'opacity-50' : 'border-border'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <InfraTypeBadge type={infra.type!} />
-                              <div>
-                                <p className="text-sm font-medium">{infra.name}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {infra.namespace} • {infra.cluster}
-                                </p>
-                              </div>
-                            </div>
-                            {!processed && (
-                              <div className="flex gap-1">
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7 text-state-connected hover:bg-state-connected-bg"
-                                  onClick={() => handleAccept(suggestion.id)}
-                                >
-                                  <Check className="h-4 w-4" />
-                                </Button>
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7"
-                                  onClick={() => handleIgnore(suggestion.id)}
-                                >
-                                  <EyeOff className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            )}
-                            {processed && (
-                              <Badge variant="outline" className="text-xs">
-                                {acceptedSuggestions.includes(suggestion.id) ? 'Accepted' : 'Ignored'}
-                              </Badge>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Unlinked Nodes */}
-                {unlinkedNodes.length > 0 && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">Unlinked nodes</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      {unlinkedNodes.map(suggestion => {
-                        const infra = suggestion.infraResource;
-                        const suggestedService = suggestion.suggestedServiceId 
-                          ? mockServices.find(s => s.id === suggestion.suggestedServiceId)
-                          : null;
-                        if (!infra) return null;
-                        const processed = isProcessed(suggestion.id);
-                        
-                        return (
-                          <div 
-                            key={suggestion.id} 
-                            className={`flex items-center justify-between p-2 rounded-lg border ${
-                              processed ? 'opacity-50' : 'border-border'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <p className="text-sm font-medium">{infra.name}</p>
-                                {suggestedService && (
-                                  <p className="text-xs text-muted-foreground">
-                                    Suggested: {suggestedService.name} 
-                                    <Badge variant="outline" className="ml-1 text-[10px]">
-                                      {Math.round((suggestion.confidence || 0) * 100)}%
-                                    </Badge>
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            {!processed && (
-                              <div className="flex gap-1">
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7 text-state-connected hover:bg-state-connected-bg"
-                                  onClick={() => handleAccept(suggestion.id)}
-                                >
-                                  <Check className="h-4 w-4" />
-                                </Button>
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7"
-                                  onClick={() => handleIgnore(suggestion.id)}
-                                >
-                                  <EyeOff className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            )}
-                            {processed && (
-                              <Badge variant="outline" className="text-xs">
-                                {acceptedSuggestions.includes(suggestion.id) ? 'Accepted' : 'Ignored'}
-                              </Badge>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Suggested Relationships */}
-                {suggestedRels.length > 0 && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-medium">Suggested relationships</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      {suggestedRels.map(suggestion => {
-                        const rel = suggestion.suggestedRelationship;
-                        if (!rel) return null;
-                        const fromService = mockServices.find(s => s.id === rel.from);
-                        const processed = isProcessed(suggestion.id);
-                        
-                        return (
-                          <div 
-                            key={suggestion.id} 
-                            className={`flex items-center justify-between p-2 rounded-lg border ${
-                              processed ? 'opacity-50' : 'border-border'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm">{fromService?.name || rel.from}</span>
-                              <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                              <span className="text-sm">{rel.to}</span>
-                              <Badge variant="outline" className="text-[10px]">{rel.type}</Badge>
-                              <Badge variant="outline" className="text-[10px]">
-                                {Math.round((suggestion.confidence || 0) * 100)}%
-                              </Badge>
-                            </div>
-                            {!processed && (
-                              <div className="flex gap-1">
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7 text-state-connected hover:bg-state-connected-bg"
-                                  onClick={() => handleAccept(suggestion.id)}
-                                >
-                                  <Check className="h-4 w-4" />
-                                </Button>
-                                <Button 
-                                  size="sm" 
-                                  variant="ghost"
-                                  className="h-7"
-                                  onClick={() => handleIgnore(suggestion.id)}
-                                >
-                                  <X className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            )}
-                            {processed && (
-                              <Badge variant="outline" className="text-xs">
-                                {acceptedSuggestions.includes(suggestion.id) ? 'Accepted' : 'Ignored'}
-                              </Badge>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            </ScrollArea>
-
-            <DialogFooter>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mr-auto">
-                {acceptedSuggestions.length > 0 && (
-                  <span>{acceptedSuggestions.length} changes will be applied as draft</span>
-                )}
-              </div>
-              <Button variant="outline" onClick={handleClose}>Cancel</Button>
-              <Button onClick={handleComplete}>
-                Done
-              </Button>
-            </DialogFooter>
-          </>
-        )}
+              </>
+            )}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
